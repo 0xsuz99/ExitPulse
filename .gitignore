@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+
+# Environment — NEVER commit real credentials
+backend/.env
+frontend/.env
+frontend/.env.local
+
+# Runtime data (Telegram config saved here at runtime)
+backend/data/runtime-config.json
+
+# TypeScript build info
+*.tsbuildinfo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
