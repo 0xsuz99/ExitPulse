@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { useUserConfig, useUpdateConfig } from '../hooks/useApi'
 import { motion } from 'framer-motion'
 import { Sliders, Send, Shield, ToggleLeft, ToggleRight, Rocket, Wallet } from 'lucide-react'
+// Note: Execution Chain setting removed — chain is always determined by the token/wallet context.
 
 interface SettingsProps {
   onDirtyChange?: (dirty: boolean) => void
@@ -18,14 +19,12 @@ export default function Settings({ onDirtyChange }: SettingsProps) {
   const [criticalThreshold, setCriticalThreshold] = useState(5.0)
   const [windowMinutes, setWindowMinutes] = useState(15)
   const [trackedWalletLimit, setTrackedWalletLimit] = useState(50)
-  const [chain, setChain] = useState('bsc')
 
   useEffect(() => {
     if (!data) return
 
     setMode(data.config?.mode || 'manual')
     setRuntimeMode(data.config?.runtimeMode || 'demo')
-    setChain(data.config?.chain || 'bsc')
     setTrackedWalletLimit(data.config?.trackedWalletLimit || 50)
 
     if (data.cesConfig) {
@@ -41,7 +40,6 @@ export default function Settings({ onDirtyChange }: SettingsProps) {
 
     const savedMode = data.config?.mode || 'manual'
     const savedRuntimeMode = data.config?.runtimeMode || 'demo'
-    const savedChain = data.config?.chain || 'bsc'
     const savedTrackedLimit = data.config?.trackedWalletLimit || 50
     const savedNotify = data.cesConfig?.notifyThreshold ?? 1.5
     const savedAutoExit = data.cesConfig?.autoExitThreshold ?? 3.0
@@ -51,7 +49,6 @@ export default function Settings({ onDirtyChange }: SettingsProps) {
     return (
       mode !== savedMode ||
       runtimeMode !== savedRuntimeMode ||
-      chain !== savedChain ||
       trackedWalletLimit !== savedTrackedLimit ||
       notifyThreshold !== savedNotify ||
       autoExitThreshold !== savedAutoExit ||
@@ -62,7 +59,6 @@ export default function Settings({ onDirtyChange }: SettingsProps) {
     data,
     mode,
     runtimeMode,
-    chain,
     trackedWalletLimit,
     notifyThreshold,
     autoExitThreshold,
@@ -93,7 +89,6 @@ export default function Settings({ onDirtyChange }: SettingsProps) {
       mode,
       runtimeMode,
       trackedWalletLimit,
-      chain,
       cesConfig: {
         notifyThreshold,
         autoExitThreshold,
@@ -215,33 +210,6 @@ export default function Settings({ onDirtyChange }: SettingsProps) {
 
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }} className="glass-card p-6">
         <div className="flex items-center gap-3 mb-4">
-          <Sliders className="w-5 h-5 text-blue-400" />
-          <h2 className="text-lg font-bold text-white">Execution Chain</h2>
-        </div>
-
-        <p className="text-xs text-pulse-muted mb-3">
-          Used as the default chain for exits when wallet context is ambiguous.
-        </p>
-
-        <div className="grid grid-cols-4 gap-2">
-          {['bsc', 'solana', 'eth', 'base'].map((c) => (
-            <button
-              key={c}
-              onClick={() => setChain(c)}
-              className={`p-3 rounded-lg text-center text-sm font-semibold transition-all ${
-                chain === c
-                  ? 'bg-pulse-accent/10 text-pulse-accent border border-pulse-accent/30'
-                  : 'bg-pulse-bg text-pulse-muted border border-pulse-border hover:border-pulse-muted/30'
-              }`}
-            >
-              {c.toUpperCase()}
-            </button>
-          ))}
-        </div>
-      </motion.div>
-
-      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="glass-card p-6">
-        <div className="flex items-center gap-3 mb-4">
           <Sliders className="w-5 h-5 text-pulse-warning" />
           <h2 className="text-lg font-bold text-white">Signal Sensitivity</h2>
         </div>
@@ -261,7 +229,7 @@ export default function Settings({ onDirtyChange }: SettingsProps) {
               <span className="text-sm font-mono font-bold text-pulse-warning">{notifyThreshold}</span>
             </div>
             <p className="text-xs text-pulse-muted mb-2">
-              Fires a notification when 2-3 mid-tier wallets exit. Low urgency — just a heads up so you can monitor.
+              Lower = more signals, higher = only stronger consensus triggers a notification.
             </p>
             <input
               type="range"
@@ -279,9 +247,9 @@ export default function Settings({ onDirtyChange }: SettingsProps) {
               <label className="text-sm font-medium text-pulse-text">High-Risk Trigger</label>
               <span className="text-sm font-mono font-bold text-pulse-danger">{autoExitThreshold}</span>
             </div>
-              <p className="text-xs text-pulse-muted mb-2">
-              Strong consensus warning threshold. At or above this level, the signal is escalated as high-risk and asks for approval. Auto execution is reserved for critical panic level.
-              </p>
+            <p className="text-xs text-pulse-muted mb-2">
+              Lower = high-risk alerts fire more readily, higher = only heavy wallet consensus escalates.
+            </p>
             <input
               type="range"
               min="1"
@@ -299,7 +267,7 @@ export default function Settings({ onDirtyChange }: SettingsProps) {
               <span className="text-sm font-mono font-bold text-red-400">{criticalThreshold}</span>
             </div>
             <p className="text-xs text-pulse-muted mb-2">
-              Mass exodus by top-ranked wallets. Immediate action strongly recommended — usually means something serious (exploit, rug, whale dump).
+              Lower = auto-exit triggers more often, higher = only a genuine mass exodus qualifies.
             </p>
             <input
               type="range"
@@ -318,7 +286,7 @@ export default function Settings({ onDirtyChange }: SettingsProps) {
               <span className="text-sm font-mono font-bold text-blue-400">{windowMinutes} min</span>
             </div>
             <p className="text-xs text-pulse-muted mb-2">
-              Time window for grouping exits into a single score. Shorter windows catch rapid dumps faster, longer windows catch coordinated slow exits.
+              Shorter = catches rapid dumps, longer = catches slow coordinated exits.
             </p>
             <input
               type="range"

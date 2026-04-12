@@ -1,10 +1,15 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { API_BASE } from '../config/api';
+import { API_BASE, withSessionHeader } from '../config/api';
 
 async function fetchApi(path: string, options?: RequestInit) {
+  const headers = withSessionHeader({
+    'Content-Type': 'application/json',
+    ...(options?.headers || {}),
+  });
+
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
     ...options,
+    headers,
   });
   if (!res.ok) {
     let message = `API error: ${res.status}`;

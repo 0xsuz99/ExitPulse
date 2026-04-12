@@ -7,6 +7,7 @@ import apiRoutes from './routes/api';
 import { signalDetector } from './services/signalDetector';
 import { telegramBot } from './services/telegramBot';
 import { aveDataIngestion } from './services/aveDataIngestion';
+import { demoSessionManager } from './services/demoSessionManager';
 import type { CESSignal, WalletExit, WsEvent } from './types';
 
 const app = express();
@@ -44,20 +45,51 @@ app.get('/health', (_req, res) => {
 
 const wss = new WebSocketServer({ server, path: '/ws' });
 const clients = new Set<WebSocket>();
+const clientsBySession = new Map<string, Set<WebSocket>>();
+const sessionBySocket = new Map<WebSocket, string>();
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  const requestUrl = new URL(req.url || '/ws', `http://${req.headers.host || 'localhost'}`);
+  const requestedSessionId = requestUrl.searchParams.get('sid');
+  const sessionId = demoSessionManager.normalizeSessionId(requestedSessionId);
+
   clients.add(ws);
+  sessionBySocket.set(ws, sessionId);
+
+  if (!clientsBySession.has(sessionId)) {
+    clientsBySession.set(sessionId, new Set());
+  }
+  clientsBySession.get(sessionId)!.add(ws);
+
+  if (signalDetector.getUserConfig().runtimeMode === 'demo') {
+    demoSessionManager.attachClient(sessionId, signalDetector.getUserConfig());
+  }
+
   console.log(`[WS] Client connected (${clients.size} total)`);
 
   // Send initial state
   const initEvent: WsEvent = {
     type: 'connection_status',
-    data: { connected: true, demo: config.demoMode },
+    data: { connected: true, demo: config.demoMode, sessionId },
     timestamp: Date.now(),
   };
   ws.send(JSON.stringify(initEvent));
 
   ws.on('close', () => {
+    const socketSessionId = sessionBySocket.get(ws);
+    sessionBySocket.delete(ws);
+
+    if (socketSessionId) {
+      const group = clientsBySession.get(socketSessionId);
+      if (group) {
+        group.delete(ws);
+        if (group.size === 0) {
+          clientsBySession.delete(socketSessionId);
+        }
+      }
+      demoSessionManager.detachClient(socketSessionId);
+    }
+
     clients.delete(ws);
     console.log(`[WS] Client disconnected (${clients.size} total)`);
   });
@@ -72,13 +104,37 @@ function broadcast(event: WsEvent) {
   }
 }
 
+function broadcastToSession(sessionId: string, event: WsEvent) {
+  const group = clientsBySession.get(sessionId);
+  if (!group || group.size === 0) return;
+
+  const msg = JSON.stringify(event);
+  for (const client of group) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(msg);
+    }
+  }
+}
+
+function isLiveRuntime() {
+  return signalDetector.getUserConfig().runtimeMode === 'live';
+}
+
+demoSessionManager.on('session_event', ({ sessionId, event }: { sessionId: string; event: WsEvent }) => {
+  if (!isLiveRuntime()) {
+    broadcastToSession(sessionId, event);
+  }
+});
+
 // ─── Signal Events → WebSocket Broadcast ───
 
 signalDetector.on('signal', (signal: CESSignal) => {
+  if (!isLiveRuntime()) return;
   broadcast({ type: 'signal', data: signal, timestamp: Date.now() });
 });
 
 signalDetector.on('exit', (exit: WalletExit) => {
+  if (!isLiveRuntime()) return;
   broadcast({
     type: 'holdings_update',
     data: { exit, type: 'smart_wallet_exit' },
@@ -87,6 +143,7 @@ signalDetector.on('exit', (exit: WalletExit) => {
 });
 
 signalDetector.on('holdings_updated', (holdings: any) => {
+  if (!isLiveRuntime()) return;
   broadcast({
     type: 'holdings_update',
     data: { holdings, type: 'portfolio_updated' },
@@ -95,23 +152,40 @@ signalDetector.on('holdings_updated', (holdings: any) => {
 });
 
 signalDetector.on('exit_executed', (data: any) => {
+  if (!isLiveRuntime()) return;
   broadcast({ type: 'exit_executed', data, timestamp: Date.now() });
 });
 
 signalDetector.on('exit_failed', (data: any) => {
+  if (!isLiveRuntime()) return;
   broadcast({ type: 'exit_failed', data, timestamp: Date.now() });
 });
 
 signalDetector.on('signal_updated', (signal: CESSignal) => {
+  if (!isLiveRuntime()) return;
   broadcast({ type: 'signal', data: signal, timestamp: Date.now() });
 });
 
 signalDetector.on('signal_removed', (data: { signalId: string }) => {
+  if (!isLiveRuntime()) return;
   broadcast({ type: 'signal_removed', data, timestamp: Date.now() });
 });
 
 signalDetector.on('mode_changed', (data: any) => {
   broadcast({ type: 'mode_changed', data, timestamp: Date.now() });
+
+  const runtimeMode = data?.runtimeMode as 'demo' | 'live' | undefined;
+  if (runtimeMode === 'live') {
+    demoSessionManager.stopAll();
+    return;
+  }
+
+  if (runtimeMode === 'demo') {
+    const userConfig = signalDetector.getUserConfig();
+    for (const sessionId of clientsBySession.keys()) {
+      demoSessionManager.attachClient(sessionId, userConfig);
+    }
+  }
 });
 
 // ─── Start ───
@@ -148,6 +222,7 @@ process.on('SIGINT', () => {
   console.log('\n[Server] Shutting down...');
   aveDataIngestion.stop();
   signalDetector.stop();
+  demoSessionManager.stopAll();
   telegramBot.stop();
   server.close();
   process.exit(0);

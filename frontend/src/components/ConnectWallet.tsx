@@ -5,7 +5,7 @@ import { formatUnits } from 'viem'
 import { Wallet, LogOut } from 'lucide-react'
 import { useUserConfig } from '../hooks/useApi'
 
-import { API_BASE } from '../config/api'
+import { API_BASE, withSessionHeader } from '../config/api'
 
 export default function ConnectWallet() {
   const { address, isConnected, chain } = useAccount()
@@ -31,7 +31,7 @@ export default function ConnectWallet() {
 
       fetch(`${API_BASE}/connect-wallet`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withSessionHeader({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           walletAddress: address,
           chain: chainIdToName(chain?.id),
@@ -67,7 +67,10 @@ export default function ConnectWallet() {
     wasConnectedRef.current = false
     lastSyncedRef.current = ''
 
-    fetch(`${API_BASE}/disconnect-wallet`, { method: 'POST' })
+    fetch(`${API_BASE}/disconnect-wallet`, {
+      method: 'POST',
+      headers: withSessionHeader(),
+    })
       .then(() => {
         queryClient.invalidateQueries({ queryKey: ['config'] })
         queryClient.invalidateQueries({ queryKey: ['holdings'] })

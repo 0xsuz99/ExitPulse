@@ -1,9 +1,10 @@
-import { Router } from 'express';
+import { Request, Router } from 'express';
 import { signalDetector } from '../services/signalDetector';
 import { aveTradeApi } from '../services/aveTradeApi';
 import { aveDataIngestion } from '../services/aveDataIngestion';
 import { cesEngine } from '../services/cesEngine';
 import { telegramBot } from '../services/telegramBot';
+import { demoSessionManager } from '../services/demoSessionManager';
 import type { Chain, UserHolding } from '../types';
 
 const router = Router();
@@ -21,6 +22,15 @@ const EVM_RPC_URLS: Record<'bsc' | 'eth' | 'base', string> = {
   eth: 'https://cloudflare-eth.com',
   base: 'https://mainnet.base.org',
 };
+
+function getDemoSessionId(req: Request): string | undefined {
+  const headerId = req.header('x-demo-session-id');
+  if (headerId && headerId.trim()) return headerId.trim();
+
+  const queryId = req.query.sid;
+  if (typeof queryId === 'string' && queryId.trim()) return queryId.trim();
+  return undefined;
+}
 
 function isEvmAddress(address: string): boolean {
   return /^0x[a-fA-F0-9]{40}$/.test(address);
@@ -108,13 +118,22 @@ async function buildLiveHoldings(params: {
   return [];
 }
 
-router.get('/signals', (_req, res) => {
+router.get('/signals', (req, res) => {
+  const userConfig = signalDetector.getUserConfig();
+  if (userConfig.runtimeMode === 'demo') {
+    res.json({ signals: demoSessionManager.getSignals(getDemoSessionId(req), userConfig) });
+    return;
+  }
+
   res.json({ signals: signalDetector.getSignals() });
 });
 
 router.post('/signals/:signalId/dismiss', (req, res) => {
   const signalId = req.params.signalId;
-  const removed = signalDetector.dismissSignal(signalId);
+  const userConfig = signalDetector.getUserConfig();
+  const removed = userConfig.runtimeMode === 'demo'
+    ? demoSessionManager.dismissSignal(getDemoSessionId(req), signalId, userConfig)
+    : signalDetector.dismissSignal(signalId);
 
   if (!removed) {
     res.status(404).json({ error: 'Signal not found' });
@@ -124,7 +143,13 @@ router.post('/signals/:signalId/dismiss', (req, res) => {
   res.json({ success: true });
 });
 
-router.get('/holdings', (_req, res) => {
+router.get('/holdings', (req, res) => {
+  const userConfig = signalDetector.getUserConfig();
+  if (userConfig.runtimeMode === 'demo') {
+    res.json({ holdings: demoSessionManager.getHoldings(getDemoSessionId(req), userConfig) });
+    return;
+  }
+
   res.json({ holdings: signalDetector.getHoldings() });
 });
 
@@ -133,17 +158,20 @@ router.get('/wallets', (_req, res) => {
 });
 
 router.get('/config', (_req, res) => {
+  const userConfig = signalDetector.getUserConfig();
   res.json({
-    config: signalDetector.getUserConfig(),
+    config: userConfig,
     cesConfig: cesEngine.getConfig(),
     telegram: telegramBot.getStatus(),
-    demoHoldings: signalDetector.isUsingDemoHoldings(),
+    demoHoldings: userConfig.runtimeMode === 'demo' ? true : signalDetector.isUsingDemoHoldings(),
   });
 });
 
 router.post('/config', (req, res) => {
   signalDetector.updateUserConfig(req.body);
-  res.json({ success: true, config: signalDetector.getUserConfig(), cesConfig: cesEngine.getConfig() });
+  const updatedConfig = signalDetector.getUserConfig();
+  demoSessionManager.syncAllFromUserConfig(updatedConfig);
+  res.json({ success: true, config: updatedConfig, cesConfig: cesEngine.getConfig() });
 });
 
 router.post('/connect-wallet', async (req, res) => {
@@ -210,6 +238,11 @@ router.post('/connect-wallet', async (req, res) => {
     const holdings = await buildLiveHoldings({ walletAddress, selectedChain, nativeBalance });
     signalDetector.setHoldings(holdings);
     holdingsCount = holdings.length;
+  } else {
+    holdingsCount = demoSessionManager.getHoldings(
+      getDemoSessionId(req),
+      signalDetector.getUserConfig()
+    ).length;
   }
 
   console.log(`[API] Wallet connected: ${walletAddress} on ${selectedChain} (${runtimeMode} mode)`);
@@ -303,13 +336,18 @@ router.post('/simulate-exit', async (req, res) => {
     return;
   }
 
-  const signal = signalDetector.getSignalById(signalId);
-  if (!signal) {
+  const result = await demoSessionManager.simulateExit(
+    getDemoSessionId(req),
+    signalId,
+    source === 'telegram' || source === 'auto' ? source : 'dashboard',
+    userConfig
+  );
+
+  if (!result.success && result.error === 'Signal not found') {
     res.status(404).json({ error: 'Signal not found' });
     return;
   }
 
-  const result = await signalDetector.simulateDemoExit(signal, source === 'telegram' || source === 'auto' ? source : 'dashboard');
   res.json(result);
 });
 
@@ -444,6 +482,12 @@ router.post('/quote', async (req, res) => {
 });
 
 router.get('/stats', (_req, res) => {
+  const userConfig = signalDetector.getUserConfig();
+  if (userConfig.runtimeMode === 'demo') {
+    res.json(demoSessionManager.getStats(getDemoSessionId(_req), userConfig));
+    return;
+  }
+
   const signals = signalDetector.getSignals();
   const holdings = signalDetector.getHoldings();
   const wallets = signalDetector.getTrackedWallets();
@@ -467,7 +511,15 @@ router.get('/stats', (_req, res) => {
   });
 });
 
-router.get('/live-status', (_req, res) => {
+router.get('/live-status', (req, res) => {
+  const userConfig = signalDetector.getUserConfig();
+  if (userConfig.runtimeMode === 'demo') {
+    res.json({
+      status: demoSessionManager.getLiveStatus(getDemoSessionId(req), userConfig),
+    });
+    return;
+  }
+
   res.json({
     status: aveDataIngestion.getStatus(),
   });

@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Send, CheckCircle, ExternalLink, Copy, Check, Bot, KeyRound, Unplug, RotateCcw, Loader2 } from 'lucide-react'
 import { useSetupTelegram, useUserConfig } from '../hooks/useApi'
 
-import { API_BASE } from '../config/api'
+import { API_BASE, withSessionHeader } from '../config/api'
 
 export default function TelegramConnect() {
   const queryClient = useQueryClient()
@@ -61,7 +61,10 @@ export default function TelegramConnect() {
     setLoadingLink(true)
     setTokenError(null)
     try {
-      const res = await fetch(`${API_BASE}/telegram-link`, { method: 'POST' })
+      const res = await fetch(`${API_BASE}/telegram-link`, {
+        method: 'POST',
+        headers: withSessionHeader(),
+      })
       const result = await res.json()
       if (!res.ok) {
         throw new Error(result?.error || 'Failed to generate Telegram link')
@@ -106,7 +109,10 @@ export default function TelegramConnect() {
 
   async function disconnectTelegramChat() {
     setTokenError(null)
-    const res = await fetch(`${API_BASE}/telegram/disconnect`, { method: 'POST' })
+    const res = await fetch(`${API_BASE}/telegram/disconnect`, {
+      method: 'POST',
+      headers: withSessionHeader(),
+    })
     const payload = await res.json()
     if (!res.ok || payload?.success === false) {
       setTokenError(payload?.error || 'Failed to disconnect Telegram chat')
@@ -118,7 +124,10 @@ export default function TelegramConnect() {
 
   async function resetTelegramBot() {
     setTokenError(null)
-    const res = await fetch(`${API_BASE}/telegram/reset`, { method: 'POST' })
+    const res = await fetch(`${API_BASE}/telegram/reset`, {
+      method: 'POST',
+      headers: withSessionHeader(),
+    })
     const payload = await res.json()
     if (!res.ok || payload?.success === false) {
       setTokenError(payload?.error || 'Failed to reset Telegram bot setup')

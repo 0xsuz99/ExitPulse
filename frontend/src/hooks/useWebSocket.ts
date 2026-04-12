@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { WS_BASE } from '../config/api';
+import { WS_BASE, getDemoSessionId } from '../config/api';
 
 interface WsEvent {
   type: 'signal' | 'signal_removed' | 'exit_executed' | 'exit_failed' | 'holdings_update' | 'connection_status' | 'mode_changed';
@@ -18,9 +18,10 @@ export function useWebSocket() {
 
   const connect = useCallback(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const sessionId = encodeURIComponent(getDemoSessionId());
     const wsUrl = WS_BASE
-      ? `${WS_BASE}/ws`
-      : `${protocol}//${window.location.host}/ws`;
+      ? `${WS_BASE}/ws?sid=${sessionId}`
+      : `${protocol}//${window.location.host}/ws?sid=${sessionId}`;
 
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;

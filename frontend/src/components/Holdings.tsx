@@ -39,7 +39,7 @@ export default function Holdings() {
           ))}
         </div>
       ) : holdings.length > 0 ? (
-        <div className="space-y-2">
+        <div className="max-h-[320px] overflow-y-auto pr-1 space-y-2">
           {holdings.map((holding: any, i: number) => (
             <motion.div
               key={holding.tokenAddress}
