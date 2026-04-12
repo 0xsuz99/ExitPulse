@@ -406,7 +406,6 @@ Receive:
 ## 📁 Project Structure
 
 ```
-exitpulse/
 ├── backend/
 │   ├── data/
 │   │   └── runtime-config.json     # Persisted Telegram config
@@ -418,6 +417,9 @@ exitpulse/
 │       └── services/
 │           ├── signalDetector.ts   # Core signal detection engine
 │           ├── cesEngine.ts        # CES scoring algorithm
+│           ├── demoEngine.ts       # Per-session demo signal engine
+│           ├── demoSessionManager.ts # Demo session isolation
+│           ├── demoData.ts         # Shared demo wallet/holdings data
 │           ├── aveTradeApi.ts      # Ave API client
 │           ├── aveDataIngestion.ts # Live blockchain tx stream
 │           ├── telegramBot.ts      # Telegram bot (Grammy)
@@ -427,7 +429,7 @@ exitpulse/
     └── src/
         ├── App.tsx                 # Main app + tab routing
         ├── config/
-        │   ├── api.ts              # Centralized API/WS URLs
+        │   ├── api.ts              # Centralized API/WS URLs + session ID
         │   └── wagmi.ts            # Wagmi chain + connector config
         ├── components/
         │   ├── SignalFeed.tsx       # Real-time signal list
@@ -456,7 +458,7 @@ exitpulse/
 
 ```bash
 git clone <repo-url>
-cd exitpulse
+cd ExitPulse
 
 cd backend && npm install
 cd ../frontend && npm install
@@ -506,7 +508,7 @@ Frontend → `http://localhost:5173` · Backend → `http://localhost:3001`
 
 | Mode | Signals | Holdings | Execution |
 |---|---|---|---|
-| **Demo** | Synthetic bursts every 9–15s | Pre-seeded (ETH, BTCB, CAKE, UNI, XRP) | Simulated |
+| **Demo** | Synthetic bursts every 3–5s, per-browser-session | Pre-seeded 12-token portfolio (~$30k) | Simulated |
 | **Live** | Real Ave Data WSS stream | From connected wallet | Real on-chain |
 
 ### Exit Mode
