@@ -120,9 +120,21 @@ function isLiveRuntime() {
   return signalDetector.getUserConfig().runtimeMode === 'live';
 }
 
+// Track which demo signal IDs we already forwarded to Telegram to avoid duplicates
+// from multiple sessions generating signals for the same token.
+const telegramNotifiedSignals = new Set<string>();
+
 demoSessionManager.on('session_event', ({ sessionId, event }: { sessionId: string; event: WsEvent }) => {
   if (!isLiveRuntime()) {
     broadcastToSession(sessionId, event);
+
+    // Forward demo signals to Telegram — deduplicate by signal ID
+    if (event.type === 'signal' && event.data?.id && !telegramNotifiedSignals.has(event.data.id)) {
+      telegramNotifiedSignals.add(event.data.id);
+      telegramBot.sendSignalNotification(event.data);
+      // Cleanup old IDs after 5 min to prevent memory leak
+      setTimeout(() => telegramNotifiedSignals.delete(event.data.id), 5 * 60 * 1000);
+    }
   }
 });
 

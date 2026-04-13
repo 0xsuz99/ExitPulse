@@ -19,6 +19,8 @@ class TelegramBotService {
   private linkedChatIds: Set<string> = new Set();
   private pendingLinkCodes: Map<string, { createdAt: number }> = new Map();
   private signalListenerBound = false;
+  // Recent signals cache for /signals command (works across demo + live)
+  private recentSignals: CESSignal[] = [];
 
   constructor() {
     // Load persisted config first, fall back to .env
@@ -190,6 +192,25 @@ class TelegramBotService {
 
       const totalUsd = holdings.reduce((sum, h) => sum + h.balanceUsd, 0);
       await ctx.reply(`Your Holdings\n\n${lines.join('\n')}\n\nTotal: $${totalUsd.toFixed(2)}`);
+    });
+
+    this.bot.command('signals', async (ctx) => {
+      // In live mode read from signalDetector; in demo mode use cached signals
+      const liveSignals = signalDetector.getSignals();
+      const signals = liveSignals.length > 0 ? liveSignals : this.recentSignals;
+
+      if (!signals.length) {
+        await ctx.reply('No active signals right now. Signals appear when tracked wallets start exiting tokens you hold.');
+        return;
+      }
+
+      const lines = signals.slice(0, 8).map(s => {
+        const sevEmoji = s.severity === 'critical' ? '🔴' : s.severity === 'high' ? '🟠' : '🟡';
+        const status = s.executionStatus === 'executed' ? ' ✅' : s.executionStatus === 'executing' ? ' ⏳' : '';
+        return `${sevEmoji} ${s.tokenSymbol} — CES ${s.score} (${s.severity})${status}`;
+      });
+
+      await ctx.reply(`Active Signals\n\n${lines.join('\n')}\n\n${signals.length > 8 ? `+${signals.length - 8} more...` : ''}`);
     });
 
     this.bot.command('mode', async (ctx) => {
@@ -364,6 +385,15 @@ class TelegramBotService {
   }
 
   async sendSignalNotification(signal: CESSignal) {
+    // Cache for /signals command
+    const existing = this.recentSignals.findIndex(s => s.id === signal.id);
+    if (existing >= 0) {
+      this.recentSignals[existing] = signal;
+    } else {
+      this.recentSignals.unshift(signal);
+      if (this.recentSignals.length > 20) this.recentSignals.pop();
+    }
+
     if (!this.bot) return;
 
     const chatId = signalDetector.getUserConfig().telegramChatId;
