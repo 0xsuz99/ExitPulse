@@ -32,6 +32,13 @@ function getDemoSessionId(req: Request): string | undefined {
   return undefined;
 }
 
+router.use((req, _res, next) => {
+  if (signalDetector.getUserConfig().runtimeMode === 'demo') {
+    telegramBot.setActiveDemoSession(getDemoSessionId(req));
+  }
+  next();
+});
+
 function isEvmAddress(address: string): boolean {
   return /^0x[a-fA-F0-9]{40}$/.test(address);
 }

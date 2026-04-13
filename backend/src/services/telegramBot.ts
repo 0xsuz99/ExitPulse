@@ -1,8 +1,9 @@
 import { Bot, InlineKeyboard } from 'grammy';
 import { config } from '../config';
 import { signalDetector } from './signalDetector';
+import { demoSessionManager } from './demoSessionManager';
 import { loadPersistedConfig, savePersistedConfig } from './persistence';
-import type { CESSignal, TelegramApproval } from '../types';
+import type { CESSignal, TelegramApproval, WsEvent } from '../types';
 
 interface TelegramStatus {
   configured: boolean;
@@ -15,12 +16,13 @@ class TelegramBotService {
   private bot: Bot | null = null;
   private botUsername: string | null = null;
   private botToken: string;
-  private pendingApprovals: Map<string, TelegramApproval> = new Map();
+  private pendingApprovals: Map<string, TelegramApproval & { sessionId?: string; tokenAddress?: string; chain?: string }> = new Map();
   private linkedChatIds: Set<string> = new Set();
   private pendingLinkCodes: Map<string, { createdAt: number }> = new Map();
   private signalListenerBound = false;
   // Recent signals cache for /signals command (works across demo + live)
   private recentSignals: CESSignal[] = [];
+  private activeDemoSessionId: string | null = null;
 
   constructor() {
     // Load persisted config first, fall back to .env
@@ -35,17 +37,68 @@ class TelegramBotService {
   }
 
   private readonly onSignal = (signal: CESSignal) => {
-    this.sendSignalNotification(signal);
+    if (signalDetector.getUserConfig().runtimeMode === 'demo') {
+      return;
+    }
+    void this.sendSignalNotification(signal);
   };
 
   private readonly onSignalUpdated = (signal: CESSignal) => {
+    if (signalDetector.getUserConfig().runtimeMode === 'demo') {
+      return;
+    }
+    this.upsertRecentSignal(signal);
     void this.syncApprovalFromSignal(signal);
   };
 
   private readonly onSignalRemoved = (data: { signalId?: string }) => {
+    if (signalDetector.getUserConfig().runtimeMode === 'demo') {
+      return;
+    }
     if (!data?.signalId) return;
     void this.resolvePendingApproval(data.signalId, 'DISMISSED IN APP - removed from feed.', 'rejected');
   };
+
+  private readonly onDemoSessionEvent = ({ sessionId, event }: { sessionId: string; event: WsEvent }) => {
+    const userConfig = signalDetector.getUserConfig();
+    if (userConfig.runtimeMode !== 'demo') return;
+    if (!this.activeDemoSessionId || sessionId !== this.activeDemoSessionId) return;
+
+    if (event.type === 'signal') {
+      const signal = event.data as CESSignal;
+      const existed = this.upsertRecentSignal(signal);
+      if (existed) {
+        void this.syncApprovalFromSignal(signal, sessionId);
+        return;
+      }
+      void this.sendSignalNotification(signal, sessionId);
+      return;
+    }
+
+    if (event.type === 'signal_removed' && event.data?.signalId) {
+      void this.resolvePendingApproval(
+        event.data.signalId,
+        'DISMISSED IN APP - removed from feed.',
+        'rejected',
+        sessionId
+      );
+    }
+  };
+
+  private upsertRecentSignal(signal: CESSignal): boolean {
+    const existing = this.recentSignals.findIndex(s => s.id === signal.id);
+    if (existing >= 0) {
+      this.recentSignals[existing] = signal;
+      return true;
+    }
+    this.recentSignals.unshift(signal);
+    if (this.recentSignals.length > 20) this.recentSignals.pop();
+    return false;
+  }
+
+  private approvalKey(signalId: string, sessionId?: string) {
+    return sessionId ? `${sessionId}::${signalId}` : signalId;
+  }
 
   private isTokenFormatValid(token: string): boolean {
     return /^\d+:[A-Za-z0-9_-]{20,}$/.test(token);
@@ -56,6 +109,7 @@ class TelegramBotService {
     signalDetector.on('signal', this.onSignal);
     signalDetector.on('signal_updated', this.onSignalUpdated);
     signalDetector.on('signal_removed', this.onSignalRemoved);
+    demoSessionManager.on('session_event', this.onDemoSessionEvent);
     this.signalListenerBound = true;
   }
 
@@ -68,12 +122,16 @@ class TelegramBotService {
   private async resolvePendingApproval(
     signalId: string,
     resolutionText: string,
-    status: TelegramApproval['status']
+    status: TelegramApproval['status'],
+    sessionId?: string
   ) {
-    const approval = this.pendingApprovals.get(signalId);
+    const approvalKey = this.approvalKey(signalId, sessionId);
+    const fallbackKey = this.approvalKey(signalId);
+    const key = this.pendingApprovals.has(approvalKey) ? approvalKey : fallbackKey;
+    const approval = this.pendingApprovals.get(key);
     if (!approval || !this.bot) return;
 
-    this.pendingApprovals.set(signalId, { ...approval, status });
+    this.pendingApprovals.set(key, { ...approval, status });
 
     const baseText = approval.messageText || `Signal ${signalId}`;
     const finalText = `${baseText}\n\n${resolutionText}`;
@@ -92,11 +150,14 @@ class TelegramBotService {
       }
     }
 
-    this.pendingApprovals.delete(signalId);
+    this.pendingApprovals.delete(key);
   }
 
-  private async syncApprovalFromSignal(signal: CESSignal) {
-    const approval = this.pendingApprovals.get(signal.id);
+  private async syncApprovalFromSignal(signal: CESSignal, sessionId?: string) {
+    const approvalKey = this.approvalKey(signal.id, sessionId);
+    const fallbackKey = this.approvalKey(signal.id);
+    const key = this.pendingApprovals.has(approvalKey) ? approvalKey : fallbackKey;
+    const approval = this.pendingApprovals.get(key);
     if (!approval) return;
     if (signal.executionSource === 'telegram') return;
 
@@ -104,7 +165,8 @@ class TelegramBotService {
       await this.resolvePendingApproval(
         signal.id,
         `APPROVED IN APP - exit executed (${this.shortHash(signal.executionTxHash)}).`,
-        'approved'
+        'approved',
+        approval.sessionId
       );
       return;
     }
@@ -114,7 +176,8 @@ class TelegramBotService {
       await this.resolvePendingApproval(
         signal.id,
         `APPROVAL ATTEMPT FAILED IN APP.${reason}`,
-        'expired'
+        'expired',
+        approval.sessionId
       );
     }
   }
@@ -222,9 +285,25 @@ class TelegramBotService {
 
     this.bot.on('callback_query:data', async (ctx) => {
       const data = ctx.callbackQuery.data;
-      const [action, signalId] = data.split(':');
-      const approval = this.pendingApprovals.get(signalId);
-      const signal = signalDetector.getSignalById(signalId);
+      const [action, signalId, callbackSessionId] = data.split(':');
+      const primaryKey = this.approvalKey(signalId, callbackSessionId);
+      const fallbackKey = this.approvalKey(signalId);
+      const approval = this.pendingApprovals.get(primaryKey) || this.pendingApprovals.get(fallbackKey);
+      const userConfig = signalDetector.getUserConfig();
+
+      let signal = signalDetector.getSignalById(signalId);
+      const effectiveDemoSessionId = approval?.sessionId || callbackSessionId || this.activeDemoSessionId || undefined;
+      if (userConfig.runtimeMode === 'demo') {
+        signal = demoSessionManager.getSignalById(effectiveDemoSessionId, signalId, userConfig);
+        if (!signal && approval?.tokenAddress) {
+          signal = demoSessionManager.findSignalByToken(
+            effectiveDemoSessionId,
+            approval.tokenAddress,
+            userConfig,
+            approval.chain
+          );
+        }
+      }
 
       if (!approval) {
         if (!signal) {
@@ -241,41 +320,51 @@ class TelegramBotService {
 
       if (action === 'approve') {
         if (!signal) {
-          this.pendingApprovals.delete(signalId);
+          this.pendingApprovals.delete(primaryKey);
+          this.pendingApprovals.delete(fallbackKey);
           await ctx.answerCallbackQuery({ text: 'Signal already dismissed in app.' });
           await ctx.editMessageText((ctx.callbackQuery.message?.text || '') + '\n\nDISMISSED IN APP - no action taken.');
           return;
         }
 
         if (signal.executionStatus === 'executed' && signal.executionSource !== 'telegram') {
-          this.pendingApprovals.delete(signalId);
+          this.pendingApprovals.delete(primaryKey);
+          this.pendingApprovals.delete(fallbackKey);
           await ctx.answerCallbackQuery({ text: 'Already approved/executed in app.' });
           await ctx.editMessageText((ctx.callbackQuery.message?.text || '') + '\n\nAPPROVED IN APP - already executed.');
           return;
         }
 
         approval.status = 'approved';
-        this.pendingApprovals.set(signalId, approval);
-
-        const userConfig = signalDetector.getUserConfig();
+        this.pendingApprovals.set(
+          this.approvalKey(approval.signalId, approval.sessionId),
+          approval
+        );
         if (userConfig.runtimeMode !== 'live') {
           await ctx.answerCallbackQuery({ text: 'Demo approval received' });
           await ctx.editMessageText((ctx.callbackQuery.message?.text || '') + '\n\nAPPROVED - simulating exit...');
 
-          const result = await signalDetector.simulateDemoExit(signal, 'telegram');
+          const result = await demoSessionManager.simulateExit(
+            effectiveDemoSessionId,
+            signal.id,
+            'telegram',
+            userConfig
+          );
           if (result.success) {
             await ctx.reply(`Demo exit simulated for ${signal.tokenSymbol}. Simulated tx: ${result.txHash}`);
           } else {
             await ctx.reply(`Demo exit failed for ${signal.tokenSymbol}. Reason: ${result.error}`);
           }
-          this.pendingApprovals.delete(signalId);
+          this.pendingApprovals.delete(primaryKey);
+          this.pendingApprovals.delete(fallbackKey);
           return;
         }
 
         if (userConfig.mode === 'manual') {
           await ctx.answerCallbackQuery({ text: 'Manual mode uses wallet signing from dashboard.' });
           await ctx.editMessageText((ctx.callbackQuery.message?.text || '') + '\n\nMANUAL MODE - sign from dashboard wallet.');
-          this.pendingApprovals.delete(signalId);
+          this.pendingApprovals.delete(primaryKey);
+          this.pendingApprovals.delete(fallbackKey);
           return;
         }
 
@@ -288,13 +377,19 @@ class TelegramBotService {
         } else {
           await ctx.reply(`Exit failed for ${signal.tokenSymbol}. Error: ${result.error}`);
         }
-        this.pendingApprovals.delete(signalId);
+        this.pendingApprovals.delete(primaryKey);
+        this.pendingApprovals.delete(fallbackKey);
       }
 
       if (action === 'reject') {
         approval.status = 'rejected';
-        this.pendingApprovals.delete(signalId);
-        signalDetector.dismissSignal(signalId);
+        this.pendingApprovals.delete(primaryKey);
+        this.pendingApprovals.delete(fallbackKey);
+        if (userConfig.runtimeMode === 'demo') {
+          demoSessionManager.dismissSignal(effectiveDemoSessionId, signalId, userConfig);
+        } else {
+          signalDetector.dismissSignal(signalId);
+        }
 
         await ctx.answerCallbackQuery({ text: 'Exit rejected' });
         await ctx.editMessageText((ctx.callbackQuery.message?.text || '') + '\n\nREJECTED - removed from feed.');
@@ -361,6 +456,11 @@ class TelegramBotService {
     };
   }
 
+  setActiveDemoSession(sessionId?: string) {
+    if (!sessionId) return;
+    this.activeDemoSessionId = sessionId;
+  }
+
   disconnectLinkedChat(chatId?: string) {
     const activeChatId = chatId || signalDetector.getUserConfig().telegramChatId;
     if (activeChatId) {
@@ -375,6 +475,7 @@ class TelegramBotService {
     this.botToken = '';
     this.pendingApprovals.clear();
     this.pendingLinkCodes.clear();
+    this.activeDemoSessionId = null;
     this.disconnectLinkedChat();
   }
 
@@ -382,17 +483,11 @@ class TelegramBotService {
     this.bot?.stop();
     this.bot = null;
     this.botUsername = null;
+    this.pendingApprovals.clear();
   }
 
-  async sendSignalNotification(signal: CESSignal) {
-    // Cache for /signals command
-    const existing = this.recentSignals.findIndex(s => s.id === signal.id);
-    if (existing >= 0) {
-      this.recentSignals[existing] = signal;
-    } else {
-      this.recentSignals.unshift(signal);
-      if (this.recentSignals.length > 20) this.recentSignals.pop();
-    }
+  async sendSignalNotification(signal: CESSignal, demoSessionId?: string) {
+    this.upsertRecentSignal(signal);
 
     if (!this.bot) return;
 
@@ -417,6 +512,7 @@ class TelegramBotService {
     const userMode = userConfig.mode;
     const isDemo = userConfig.runtimeMode !== 'live';
     const modeTag = isDemo ? '\n[DEMO MODE]' : '';
+    const effectiveSessionId = isDemo ? (demoSessionId || this.activeDemoSessionId || undefined) : undefined;
 
     if (isDemo && userMode === 'manual') {
       await this.bot.api.sendMessage(
@@ -427,9 +523,15 @@ class TelegramBotService {
     }
 
     if (isDemo && userMode === 'auto' && signal.action === 'notify') {
+      const approveData = effectiveSessionId
+        ? `approve:${signal.id}:${effectiveSessionId}`
+        : `approve:${signal.id}`;
+      const rejectData = effectiveSessionId
+        ? `reject:${signal.id}:${effectiveSessionId}`
+        : `reject:${signal.id}`;
       const keyboard = new InlineKeyboard()
-        .text('Approve Exit', `approve:${signal.id}`)
-        .text('Ignore', `reject:${signal.id}`);
+        .text('Approve Exit', approveData)
+        .text('Ignore', rejectData);
 
       const sent = await this.bot.api.sendMessage(
         chatId,
@@ -437,13 +539,16 @@ class TelegramBotService {
         { reply_markup: keyboard }
       );
 
-      this.pendingApprovals.set(signal.id, {
+      this.pendingApprovals.set(this.approvalKey(signal.id, effectiveSessionId), {
         signalId: signal.id,
         chatId,
         messageId: sent.message_id,
         messageText: `${message}${modeTag}\n\nAuto mode: this signal is non-critical. Approve to simulate an early exit, or ignore to keep monitoring.`,
         status: 'pending',
         createdAt: Date.now(),
+        sessionId: effectiveSessionId,
+        tokenAddress: signal.tokenAddress,
+        chain: signal.chain,
       });
       return;
     }
@@ -473,7 +578,7 @@ class TelegramBotService {
         reply_markup: keyboard,
       });
 
-      this.pendingApprovals.set(signal.id, {
+      this.pendingApprovals.set(this.approvalKey(signal.id), {
         signalId: signal.id,
         chatId,
         messageId: sent.message_id,
