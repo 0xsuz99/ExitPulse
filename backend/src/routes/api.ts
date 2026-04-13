@@ -323,7 +323,12 @@ router.post('/exit', async (req, res) => {
 });
 
 router.post('/simulate-exit', async (req, res) => {
-  const { signalId, source } = req.body as { signalId?: string; source?: 'dashboard' | 'telegram' | 'auto' };
+  const { signalId, source, tokenAddress, chain } = req.body as {
+    signalId?: string;
+    source?: 'dashboard' | 'telegram' | 'auto';
+    tokenAddress?: string;
+    chain?: Chain;
+  };
   const userConfig = signalDetector.getUserConfig();
 
   if (userConfig.runtimeMode !== 'demo') {
@@ -336,9 +341,20 @@ router.post('/simulate-exit', async (req, res) => {
     return;
   }
 
+  const sessionId = getDemoSessionId(req);
+  let targetSignalId = signalId;
+
+  const directMatch = demoSessionManager.getSignalById(sessionId, signalId, userConfig);
+  if (!directMatch && tokenAddress) {
+    const recovered = demoSessionManager.findSignalByToken(sessionId, tokenAddress, userConfig, chain);
+    if (recovered) {
+      targetSignalId = recovered.id;
+    }
+  }
+
   const result = await demoSessionManager.simulateExit(
-    getDemoSessionId(req),
-    signalId,
+    sessionId,
+    targetSignalId,
     source === 'telegram' || source === 'auto' ? source : 'dashboard',
     userConfig
   );

@@ -77,7 +77,11 @@ export default function SignalFeed({ signals, onDismissSignal }: SignalFeedProps
     }
 
     try {
-      const result = await simulateExit.mutateAsync(signalId)
+      const result = await simulateExit.mutateAsync({
+        signalId,
+        tokenAddress: signal.tokenAddress,
+        chain: signal.chain,
+      })
       if (result?.success) {
         setActionState(prev => ({
           ...prev,

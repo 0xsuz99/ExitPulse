@@ -106,6 +106,24 @@ export class DemoSessionManager extends EventEmitter {
     return this.ensureSession(this.normalizeSessionId(rawSessionId), userConfig).engine.getSignalById(signalId);
   }
 
+  findSignalByToken(
+    rawSessionId: string | undefined,
+    tokenAddress: string,
+    userConfig: UserConfig,
+    chain?: string
+  ): CESSignal | undefined {
+    const session = this.ensureSession(this.normalizeSessionId(rawSessionId), userConfig);
+    const targetToken = tokenAddress.toLowerCase();
+    const targetChain = chain?.toLowerCase();
+
+    return session.engine.getSignals().find(signal => {
+      const tokenMatches = signal.tokenAddress.toLowerCase() === targetToken;
+      if (!tokenMatches) return false;
+      if (!targetChain) return true;
+      return signal.chain.toLowerCase() === targetChain;
+    });
+  }
+
   dismissSignal(rawSessionId: string | undefined, signalId: string, userConfig: UserConfig): boolean {
     return this.ensureSession(this.normalizeSessionId(rawSessionId), userConfig).engine.dismissSignal(signalId);
   }

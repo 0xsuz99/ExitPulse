@@ -111,8 +111,11 @@ export function useExecuteExit() {
 export function useSimulateExit() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (signalId: string) =>
-      fetchApi('/simulate-exit', { method: 'POST', body: JSON.stringify({ signalId, source: 'dashboard' }) }),
+    mutationFn: (payload: { signalId: string; tokenAddress?: string; chain?: string }) =>
+      fetchApi('/simulate-exit', {
+        method: 'POST',
+        body: JSON.stringify({ ...payload, source: 'dashboard' }),
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['signals'] });
       queryClient.invalidateQueries({ queryKey: ['holdings'] });
